@@ -61,13 +61,13 @@ class MatchEngine:
 
         if order.side == Side.SELL and global_best_bid is not None and global_best_bid > order.price and global_best_bid > local_best_bid:
             # Global best bid is better
-            # print(f"should reroute SELL order {order.order_id} for {order.symbol} to global best bid {global_best_bid}")
+            print(f"reroute SELL order {order.order_id} for {order.symbol} to global best bid {global_best_bid}")
             # await self.route_order_to_global(order, global_best_bid, "bid", global_best_bid_id)
             # return []
             return False, global_best_bid_id, []
         elif order.side == Side.BUY and global_best_ask is not None and global_best_ask < order.price and global_best_ask < local_best_ask:
             # Global best ask is better
-            # print(f"should reroute BUY order {order.order_id} for {order.symbol} to global best ask {global_best_ask}")
+            print(f"reroute BUY order {order.order_id} for {order.symbol} to global best ask {global_best_ask}")
             # await self.route_order_to_global(order, global_best_ask, "ask", global_best_ask_id)
             return False, global_best_ask_id, []
 
