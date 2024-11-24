@@ -22,13 +22,13 @@ class MatchingSystemSimulator:
         self.engines = []
         self.synchronizers = []
         self.servers = []
+        self.address_to_engine_id = {}
         
     async def setup(self):
         """Set up matching engines and synchronizers"""
-        # Create engines
+        # Create engines and synchronizers
         for i in range(self.num_engines):
-            engine = MatchEngine(f"engine_{i}")
-            self.engines.append(engine)
+            
             
             # Create peer address list for each engine
             peer_addresses = [
@@ -42,6 +42,8 @@ class MatchingSystemSimulator:
                 engine_id=f"engine_{i}",
                 peer_addresses=peer_addresses
             )
+            engine = MatchEngine(engine_id=i, synchronizer=synchronizer)
+            self.engines.append(engine)
             await synchronizer.start()  # Start the synchronizer
             self.synchronizers.append(synchronizer)
             
@@ -49,16 +51,21 @@ class MatchingSystemSimulator:
             try:
                 server = await serve(
                     engine,
+                    synchronizer,  # Pass the synchronizer here
                     f"127.0.0.1:{self.base_port + i}"
                 )
                 self.servers.append(server)
+                address = f"127.0.0.1:{self.base_port + i}"
+                self.address_to_engine_id[address] = i
+
                 print(f"Started server {i} on port {self.base_port + i}")
             except Exception as e:
                 print(f"Failed to start server {i}: {e}")
                 raise
-            
+        
         # Wait for servers to start
         await asyncio.sleep(2)
+
         
     async def cleanup(self):
         """Cleanup resources"""
@@ -71,54 +78,75 @@ class MatchingSystemSimulator:
             await server.stop(grace=None)
         
     async def run_simulation(self, num_orders: int = 1000, symbols: List[str] = None):
-        """Run trading simulation"""
+        """
+        Run trading simulation by generating and submitting random orders.
+        Orders are randomly assigned to engines, and their execution is logged.
+        """
         if symbols is None:
-            symbols = ["BTC-USD", "DOGE-BTC", "DUCK-DOGE"]
-            
+            # symbols = ["BTC-USD", "DOGE-BTC", "DUCK-DOGE"]
+            symbols = ["BTC-USD"]
+
         print("Starting simulation...")
         start_time = time.time()
-        
+
         try:
-            # Generate and submit orders
             for i in range(num_orders):
-                order = self._generate_random_order(symbols)
-                
-                # Select random engine and its synchronizer
-                engine_idx = random.randrange(len(self.engines))
-                engine = self.engines[engine_idx]
-                synchronizer = self.synchronizers[engine_idx]
-                
-                # Submit order and measure latency
-                submit_time = time.time()
-                fills = engine.submit_order(order)
-                
-                # Publish the update to peers
-                if fills:
-                    orderbook = engine.orderbooks.get(order.symbol)
-                    if orderbook:
-                        bids = [(price, sum(o.remaining_quantity for o in orders), len(orders)) 
-                               for price, orders in orderbook.bids.items()]
-                        asks = [(price, sum(o.remaining_quantity for o in orders), len(orders)) 
-                               for price, orders in orderbook.asks.items()]
-                        await synchronizer.publish_update(order.symbol, bids, asks)
-                
-                latency = time.time() - submit_time
-                print(f"Order {i+1}: {order.order_id} executed in {latency*1000:.2f}ms with {len(fills)} fills")
-                
-                # Small delay between orders
-                await asyncio.sleep(0.1)
-                
+                try:
+                    # Generate a random order
+                    # print(f"Simulation iteration {i+1}: Generating random order.")
+                    order = self._generate_random_order(symbols)
+                    # print(f"Generated order: {order}")
+
+                    # Select a random engine
+                    engine_idx = random.randrange(len(self.engines))
+                    engine = self.engines[engine_idx]
+                    synchronizer = self.synchronizers[engine_idx]
+                    # print(f"Selected engine {engine_idx} (Engine ID: {engine.engine_id}).")
+
+                    # Submit the order and measure latency
+                    submit_time = time.time()
+                    # Use a timeout to detect hanging calls
+
+
+                    islocal, idx, fills = await asyncio.wait_for(engine.submit_order(order), timeout=15.0)
+                    if not islocal:
+                        engine_idx = self.address_to_engine_id[idx]
+                        engine = self.engines[engine_idx]
+                        islocal, idx, fills = await asyncio.wait_for(engine.submit_order(order), timeout=15.0)
+
+                    # Publish the update to peers if there are fills
+                    if fills:
+                        orderbook = engine.orderbooks.get(order.symbol)
+                        if orderbook:
+                            bids = [(price, sum(o.remaining_quantity for o in orders), len(orders)) 
+                                    for price, orders in orderbook.bids.items()]
+                            asks = [(price, sum(o.remaining_quantity for o in orders), len(orders)) 
+                                    for price, orders in orderbook.asks.items()]
+                            await synchronizer.publish_update(order.symbol, bids, asks)
+
+                    latency = time.time() - submit_time
+                    print(f"Order {i+1}: {order.order_id} executed in {latency*1000:.2f}ms with {len(fills)} fills.")
+
+                    await asyncio.sleep(0.1)
+
+                except asyncio.TimeoutError:
+                    print(f"Iteration {i+1}: submit_order timed out for order {order.order_id}. Skipping to next.")
+                except Exception as e:
+                    print(f"Iteration {i+1}: Error during order submission: {e}. Skipping to next.")
+
+            # Simulation completion
             total_time = time.time() - start_time
             print(f"\nSimulation completed:")
             print(f"Processed {num_orders} orders in {total_time:.2f} seconds")
-            print(f"Average latency: {(total_time/num_orders)*1000:.2f}ms per order")
-            
+            print(f"Average latency: {(total_time / num_orders) * 1000:.2f}ms per order")
+
             # Print final order book state
             await self._print_order_books(symbols)
-            
+
         except Exception as e:
             print(f"Simulation error: {e}")
             raise
+
             
     async def _print_order_books(self, symbols: List[str]):
         """Print final state of all order books"""
@@ -134,6 +162,7 @@ class MatchingSystemSimulator:
                     print("Asks:")
                     for price in sorted(book.asks.keys())[:5]:
                         print(f"  {price}: {sum(o.remaining_quantity for o in book.asks[price])}")
+
 
     def _generate_random_order(self, symbols: List[str]) -> Order:
         """Generate a random order"""
