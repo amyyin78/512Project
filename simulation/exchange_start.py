@@ -72,7 +72,7 @@ async def main():
 
     # Randomly assign clients to engines
     client_names = [
-        "Adam", "Betsy", "Charlie", "Diana", "Eric", "Fred", "Geoffrey", "Harry", "Ian"
+        "Adam", "Betsy", "Charlie", "Diana", "Eric", "Fred", "Geoffrey", "Harry", "Ian", "Feng", "Chris", "Amy"
     ]
     for client_name in client_names:
         assigned_engine = random.choice(list(me_data.keys()))

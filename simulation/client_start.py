@@ -29,6 +29,9 @@ async def main():
         "Geoffrey",
         "Harry",
         "Ian",
+        "Feng",
+        "Chris",
+        "Amy"
     ]
     client_assignments = {
         "Adam": "engine_0",
@@ -39,7 +42,10 @@ async def main():
         "Fred": "engine_2",
         "Geoffrey": "engine_0",
         "Harry": "engine_1",
-        "Ian": "engine_2"
+        "Ian": "engine_2",
+        "Feng": "engine_0",
+        "Chris": "engine_1",
+        "Amy": "engine_2"
     }
     me_data = {
         "engine_0": "127.0.0.1:50051",

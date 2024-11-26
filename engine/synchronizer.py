@@ -260,8 +260,8 @@ class OrderBookSynchronizer:
         for symbol in symbols:
             # Initialize with local best bid and ask
             local_orderbook = await self._get_local_orderbook(symbol)
-            best_bid = max((level.price for level in local_orderbook.bids if level.quantity > 0), default=None)
-            best_ask = min((level.price for level in local_orderbook.asks if level.quantity > 0), default=None)
+            best_bid = max((level.price for level in local_orderbook.bids if level.quantity > 0), default=float('-inf'))
+            best_ask = min((level.price for level in local_orderbook.asks if level.quantity > 0), default=float('inf'))
 
             if best_bid is None:
                 self.logger.info(f"No local best bid found for {symbol}")
