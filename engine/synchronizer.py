@@ -233,13 +233,23 @@ class OrderBookSynchronizer:
         self.logger.debug(f"route order {order.engine_origin_addr} -> {me_addr} return status {order_response.status}")
 
 
-    async def lookup_bbo_engine(self, symbol, side):
+    async def lookup_bbo_engine(self, order):
         """Returns the address of the engine with the best bid/ask for a symbol"""
+        side = order.side
+        symbol = order.symbol
         best_bids_asks = await self.get_global_best_bids_asks([symbol])
         if side == Side.BUY:
-            return best_bids_asks[0][symbol][1]  
-        else:
+            # find best ask available
+            if best_bids_asks[1][symbol][0] is None or order.price < best_bids_asks[1][symbol][0]:
+                self.logger.info(f"Best ask for {symbol} is on {best_bids_asks[1][symbol][1]} but order is below, not rerouting")
+                return self.engine_addr
             return best_bids_asks[1][symbol][1]  
+        else:
+            # find best bid available
+            if best_bids_asks[0][symbol][0] is None or order.price > best_bids_asks[0][symbol][0]:
+                self.logger.info(f"Best bid for {symbol} is on {best_bids_asks[0][symbol][1]} but order is above, not rerouting")
+                return self.engine_addr
+            return best_bids_asks[0][symbol][1]
 
     async def get_global_best_bids_asks(self, symbols: List[str]):
         """Fetch and log global best bids and asks across engines"""

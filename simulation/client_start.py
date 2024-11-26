@@ -15,9 +15,9 @@ from client.client import Client
 
 
 async def main():
-    symbol_list = ["AAPL"]
+    symbol_list = ["AAPL", "DOGE", "TSLA"]
     DELAY_FACTOR = 1
-    SIM_DURATION = 10 # in seconds
+    SIM_DURATION = 25 # in seconds
     EXCHANGE_ADDR = "127.0.0.1:50050"
     client_names = [
         "Adam",

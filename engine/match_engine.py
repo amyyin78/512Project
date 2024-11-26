@@ -43,7 +43,7 @@ class MatchEngine:
         self.logger.debug(f"received order: {order}")
 
         # First check if the best price for this symbol is on another engine
-        best_me_addr = await self.synchronizer.lookup_bbo_engine(order.symbol, order.side)
+        best_me_addr = await self.synchronizer.lookup_bbo_engine(order)
         self.logger.info(f"Order {order.order_id} original address: {order.engine_origin_addr}")
         self.logger.info(f"Order {order.order_id} best address: {best_me_addr}")
 

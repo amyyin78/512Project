@@ -24,7 +24,7 @@ async def matching_simulation():
         await simulator.setup()
 
         # Run simulation
-        await simulator.run_simulation(num_orders=100)
+        await simulator.run_simulation(num_orders=500)
     except Exception as e:
         print(f"Simulation failed: {e}")
     finally:
