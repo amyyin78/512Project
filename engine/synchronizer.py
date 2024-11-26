@@ -1,17 +1,32 @@
 import asyncio
 import time
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Set
 import grpc
 import grpc.aio
+import pytz
+import datetime
+import uuid
 
-from common.order import Order, OrderStatus, Side
-from common.orderbook import OrderBook
+from common.order import Order, OrderStatus
 import proto.matching_service_pb2 as pb2
 import proto.matching_service_pb2_grpc as pb2_grpc
 
+
+import asyncio
+import time
+from typing import Dict, List, Set, Optional
+import grpc
+import grpc.aio
+import os
+
+from common.order import Order, OrderStatus, Side
+from common.orderbook import OrderBook
+from client.custom_formatter import LogFactory
+
 class OrderBookSynchronizer:
-    def __init__(self, engine_id: str, peer_addresses: List[str]):
+    def __init__(self, engine_id: str, engine_addr: str, peer_addresses: List[str]):
         self.engine_id = engine_id
+        self.engine_addr = engine_addr
         self.peer_addresses = peer_addresses
         self.sequence_number = 0
         self.update_queue = asyncio.Queue()
@@ -21,12 +36,21 @@ class OrderBookSynchronizer:
         self.lock = asyncio.Lock()
         self.global_best_prices: Dict[str, Dict[str, Optional[float]]] = {}
 
+        self.log_directory = os.getcwd() + "/logs/synchronizer_logs/"
+        self.logger = LogFactory(
+            name=f"Synchronizer-ME {self.engine_id}", 
+            log_directory=self.log_directory
+        ).get_logger()
+
+        # Include itself in peer_stubs
+        self.stub = pb2_grpc.MatchingServiceStub(grpc.aio.insecure_channel(self.engine_addr))
+
     async def start(self):
         """Start the synchronizer"""
         await self._connect_to_peers()
         self.running = True
         asyncio.create_task(self._sync_loop())
-        print(f"Synchronizer {self.engine_id} started")
+        self.logger.info(f"Synchronizer {self.engine_id} started")
 
     async def stop(self):
         """Stop the synchronizer"""
@@ -43,7 +67,7 @@ class OrderBookSynchronizer:
                 channel = grpc.aio.insecure_channel(address)
                 self.peer_stubs[address] = pb2_grpc.MatchingServiceStub(channel)
             except Exception as e:
-                print(f"Failed to connect to peer at {address}: {e}")
+                self.logger.error(f"Failed to connect to peer at {address}: {e}")
 
     async def _sync_loop(self):
         """Main synchronization loop"""
@@ -59,22 +83,24 @@ class OrderBookSynchronizer:
                     print(f"Error broadcasting update: {e}")
                     self.update_queue.task_done()
 
-                try:
-                    await self._process_peer_updates()
-                    await asyncio.sleep(0.1)
-                except Exception as e:
-                    print(f"Error processing peer updates: {e}")
+#                try:
+#                    await self._process_peer_updates()
+#                    await asyncio.sleep(0.1)
+#                except Exception as e:
+#                    print(f"Error processing peer updates: {e}")
                 
             except Exception as e:
                 print(f"Sync error: {e}")
                 await asyncio.sleep(1)
 
+            await asyncio.sleep(0.1) # return control
+
     async def _broadcast_update(self, update: dict):
         """Broadcast update to all peer engines"""
-        pb_update = pb2.OrderBookUpdate(
+        pb_update = pb2.BroadcastOrderbookRequest(
             symbol=update['symbol'],
             sequence_number=self.sequence_number,
-            engine_id=self.engine_id,
+            originating_engine_id=self.engine_id,
             bids=[pb2.PriceLevel(
                 price=price,
                 quantity=qty,
@@ -91,7 +117,7 @@ class OrderBookSynchronizer:
         tasks = []
         for address, stub in self.peer_stubs.items():
             try:
-                tasks.append(stub.SyncOrderBook(pb_update))
+                tasks.append(stub.BroadcastOrderbook(pb_update))
             except Exception as e:
                 print(f"Error creating broadcast task for {address}: {e}")
 
@@ -102,21 +128,17 @@ class OrderBookSynchronizer:
                 if isinstance(result, Exception):
                     print(f"Broadcast error: {result}")
 
-    async def _process_peer_updates(self):
+    async def process_peer_update(self, request):
         """Process incoming updates from peer engines"""
-        async with self.lock:
-            for address, stub in self.peer_stubs.items():
-                try:
-                    # Get updates from peer
-                    request = pb2.GetOrderBookRequest()
-                    updates = await stub.GetOrderBook(request)
                     
-                    # Process each update
-                    if hasattr(updates, 'sequence_number') and updates.sequence_number > self.sequence_number:
-                        await self._apply_update(updates)
+        try:
+            if request.sequence_number > self.sequence_number:
+                await self._apply_update(request)
+            else:
+                self.logger.warning(f"request {request} has sequence number smaller than sequence number ({self.sequence_number}) of synchronizer")
                             
-                except Exception as e:
-                    print(f"Error processing updates from {address}: {e}")
+        except Exception as e:
+           self.logger.error(f"Error processing updates from {request.originating_engine_addr}: {e}")
 
     async def _apply_update(self, update):
         """Apply an order book update from a peer"""
@@ -138,7 +160,7 @@ class OrderBookSynchronizer:
                     remaining_quantity=update.quantity,
                     status=OrderStatus.NEW,
                     timestamp=time.time(),
-                    user_id=update.user_id,
+                    client_id=update.user_id,
                     engine_id=update.engine_id
                 )
                 
@@ -179,206 +201,107 @@ class OrderBookSynchronizer:
         # Update global best prices
         await self.update_global_best_prices(symbol, best_bid, best_ask)
 
-    async def broadcast_best_prices(self, symbol: str, best_bid: float, best_ask: float):
-        """Broadcast global best bid and ask prices to peers"""
-        pb_update = pb2.GlobalBestPriceUpdate(
-            symbol=symbol,
-            best_bid=best_bid,
-            best_ask=best_ask,
-            engine_id=self.engine_id
-        )
-        tasks = []
-        for address, stub in self.peer_stubs.items():
-            try:
-                tasks.append(stub.SyncGlobalBestPrice(pb_update))
-            except Exception as e:
-                print(f"Error broadcasting best prices to {address}: {e}")
-        
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, Exception):
-                    print(f"Broadcast error: {result}")
+    async def route_fill(self, fill, client_id, me_addr): 
+        stub = self.peer_stubs[me_addr]
 
-    def extract_engine_id(address: str) -> int:
-        """
-        Extract the engine ID from the given address.
+        self.logger.debug(f"route_fill fill: {fill}")
+        eastern = pytz.timezone('US/Eastern')
 
-        The engine ID is determined as the last digit of the port minus 1.
-
-        Args:
-            address (str): The peer address in the format 'IP:PORT'.
-
-        Returns:
-            int: The calculated engine ID.
-        """
-        try:
-            # Split the address to extract the port
-            port = address.split(":")[-1]
-
-            # Get the last digit of the port
-            last_digit = int(port[-1])
-
-            # Compute the engine ID
-            engine_id = last_digit - 1
-            return engine_id
-        except (ValueError, IndexError) as e:
-            print(f"Error extracting engine ID from address {address}: {e}")
-            return None
-
-
-    
-    async def update_global_best_prices(self, symbol: str, highest_bid: float, lowest_ask: float):
-        """
-        Update the global best prices for a symbol and include engine IDs.
-
-        Args:
-            symbol (str): The trading symbol.
-            highest_bid (float): The current highest bid price.
-            lowest_ask (float): The current lowest ask price.
-        """
-        highest_bid_engine = None
-        lowest_ask_engine = None
-
-        for address, stub in self.peer_stubs.items():
-            try:
-                request = pb2.GetOrderBookRequest(symbol=symbol)
-                response = await stub.GetOrderBook(request)
-
-                valid_bids = [price_level for price_level in response.bids if price_level.quantity > 0]
-                valid_asks = [price_level for price_level in response.asks if price_level.quantity > 0]
-
-                peer_highest_bid = max((price_level.price for price_level in valid_bids), default=None)
-                peer_lowest_ask = min((price_level.price for price_level in valid_asks), default=None)
-
-                # Get engine ID from address
-                # engine_id = extract_engine_id(address)
-
-                if peer_highest_bid is not None and (highest_bid is None or peer_highest_bid > highest_bid):
-                    highest_bid = peer_highest_bid
-                    highest_bid_engine = address
-
-                if peer_lowest_ask is not None and (lowest_ask is None or peer_lowest_ask < lowest_ask):
-                    lowest_ask = peer_lowest_ask
-                    lowest_ask_engine = address
-
-            except Exception as e:
-                print(f"Failed to fetch order book from {address} for {symbol}: {e}")
-
-        # Save the updated global best prices
-        self.global_best_prices[symbol] = {
-            'best_bid': {'price': highest_bid, 'engine_id': highest_bid_engine},
-            'best_ask': {'price': lowest_ask, 'engine_id': lowest_ask_engine},
+        fill_dict = {
+            'fill_id' : str(fill.fill_id),
+            'order_id' : str(fill.order_id),
+            'symbol' : str(fill.symbol),
+            'side' : str(fill.side),
+            'price' : float(fill.price),
+            'quantity' : int(fill.quantity),
+            'remaining_quantity' : int(fill.remaining_quantity),
+            'timestamp' : (int(fill.timestamp.astimezone(eastern).timestamp() * 10 ** 9)),
+            'buyer_id' : str(fill.buyer_id),
+            'seller_id' : str(fill.seller_id),
+            'engine_destination_addr' : str(fill.engine_destination_addr),
         }
+        fill_response = await stub.PutFill(pb2.PutFillRequest(
+            client_id=str(client_id),
+            fill=fill_dict,
+        ))
+        self.logger.debug(f"route fill {self.engine_addr} -> {me_addr} return status {fill_response.status}")
 
 
+    async def route_order(self, order, me_addr):
+        stub = self.peer_stubs[me_addr]
+        order_response = await stub.SubmitOrder(order)
+        self.logger.debug(f"route order {order.engine_origin_addr} -> {me_addr} return status {order_response.status}")
 
 
+    async def lookup_bbo_engine(self, symbol, side):
+        """Returns the address of the engine with the best bid/ask for a symbol"""
+        best_bids_asks = await self.get_global_best_bids_asks([symbol])
+        if side == Side.BUY:
+            return best_bids_asks[0][symbol][1]  
+        else:
+            return best_bids_asks[1][symbol][1]  
 
-    def print_global_best_prices(self):
-        """Print the global best bid and ask for all symbols."""
-        print("\nGlobal Best Prices:")
-        for symbol, prices in self.global_best_prices.items():
-            best_bid = prices['best_bid']
-            best_ask = prices['best_ask']
-            print(f"Symbol: {symbol}")
-            print(f"  Best Bid: {best_bid if best_bid is not None else 'None'}")
-            print(f"  Best Ask: {best_ask if best_ask is not None else 'None'}")
+    async def get_global_best_bids_asks(self, symbols: List[str]):
+        """Fetch and log global best bids and asks across engines"""
+        self.logger.info(f"Fetching global best bids and asks for {symbols}")
+        global_best_bids = {}
+        global_best_asks = {}
 
-    async def get_peer_orderbooks(self, symbol: str):
-        """
-        Fetch and maintain order books from all peer engines.
-        This method retrieves the current order books from all peers and updates
-        the local state to reflect the latest data from each engine.
-        """
-        peer_orderbooks = {}
+        for symbol in symbols:
+            # Initialize with local best bid and ask
+            local_orderbook = await self._get_local_orderbook(symbol)
+            best_bid = max((level.price for level in local_orderbook.bids if level.quantity > 0), default=None)
+            best_ask = min((level.price for level in local_orderbook.asks if level.quantity > 0), default=None)
 
-        for address, stub in self.peer_stubs.items():
-            try:
-                # Create a request for the order book
-                request = pb2.GetOrderBookRequest(symbol=symbol)
-                response = await stub.GetOrderBook(request)
+            if best_bid is None:
+                self.logger.info(f"No local best bid found for {symbol}")
+            if best_ask is None:
+                self.logger.info(f"No local best ask found for {symbol}")
 
-                # Parse response into a structured format
-                peer_orderbooks[address] = {
-                    'bids': [
-                        {'price': level.price, 'quantity': level.quantity, 'order_count': level.order_count}
-                        for level in response.bids if level.quantity > 0
-                    ],
-                    'asks': [
-                        {'price': level.price, 'quantity': level.quantity, 'order_count': level.order_count}
-                        for level in response.asks if level.quantity > 0
-                    ],
-                    'sequence_number': response.sequence_number
-                }
-            except Exception as e:
-                print(f"Failed to fetch order book from {address}: {e}")
+            global_best_bids[symbol] = (best_bid, self.engine_addr)
+            global_best_asks[symbol] = (best_ask, self.engine_addr)
 
-        return peer_orderbooks
-    
-    async def fetch_peer_order_book(self, symbol: str, engine_address: str) -> Optional[OrderBook]:
-        """
-        Fetch the order book for a symbol from a peer engine.
+            for address in self.peer_stubs.keys():
+                try:
+                    stub = self.peer_stubs[address]
+                    request = pb2.GetOrderbookRequest(symbol=symbol)
+                    update = await stub.GetOrderBook(request)
 
-        Args:
-            symbol (str): The trading symbol.
-            engine_address (str): The address of the peer engine.
+                    best_bid = max((level.price for level in update.bids if level.quantity > 0), default=None)
+                    best_ask = min((level.price for level in update.asks if level.quantity > 0), default=None)
 
-        Returns:
-            Optional[OrderBook]: The retrieved order book in internal format, or None if unavailable.
-        """
-        stub = self.peer_stubs.get(engine_address)
-        if not stub:
-            print(f"Error: No gRPC stub found for engine address {engine_address}")
-            return None
+                    if best_bid is not None:
+                        if symbol not in global_best_bids or best_bid > global_best_bids[symbol][0]:
+                            global_best_bids[symbol] = (best_bid, address)
 
-        try:
-            # Request order book from the peer
-            request = pb2.GetOrderBookRequest(symbol=symbol)
-            response = await stub.GetOrderBook(request)
+                    if best_ask is not None:
+                        if symbol not in global_best_asks or best_ask < global_best_asks[symbol][0]:
+                            global_best_asks[symbol] = (best_ask, address)
 
-            # Convert the protobuf response into an internal OrderBook object
-            orderbook = OrderBook(symbol=symbol)
-            for bid in response.bids:
-                orderbook.bids[bid.price] = [
-                    Order(
-                        order_id=str(uuid.uuid4()),
-                        symbol=symbol,
-                        side=Side.BUY,
-                        price=bid.price,
-                        quantity=bid.quantity,
-                        remaining_quantity=bid.quantity,
-                        status=OrderStatus.NEW,
-                        timestamp=datetime.now().timestamp(),
-                        user_id="peer",
-                        engine_id=engine_address,
-                    )
-                    for _ in range(bid.order_count)
-                ]
-            for ask in response.asks:
-                orderbook.asks[ask.price] = [
-                    Order(
-                        order_id=str(uuid.uuid4()),
-                        symbol=symbol,
-                        side=Side.SELL,
-                        price=ask.price,
-                        quantity=ask.quantity,
-                        remaining_quantity=ask.quantity,
-                        status=OrderStatus.NEW,
-                        timestamp=datetime.now().timestamp(),
-                        user_id="peer",
-                        engine_id=engine_address,
-                    )
-                    for _ in range(ask.order_count)
-                ]
-            return orderbook
+                except Exception as e:
+                    self.logger.error(f"Error fetching order book from {address} for {symbol}: {e}")
+        self.logger.info(f"Global best bids: {global_best_bids}")
+        self.logger.info(f"Global best asks: {global_best_asks}")
 
-        except grpc.RpcError as e:
-            print(f"Failed to fetch order book from engine at {engine_address}: {e.details()}")
-            return None
+        return global_best_bids, global_best_asks
 
-        
+    async def _get_local_orderbook(self, symbol: str):
+        """Fetch the local order book for a symbol"""
+        request = pb2.GetOrderbookRequest(symbol=symbol)
+        response = await self.stub.GetOrderBook(request)
+        return response
 
+    def get_best_bid(self, symbol: str) -> Optional[float]:
+        """Get the best bid price for a symbol in the local order book"""
+        if symbol in self.global_best_prices and 'bid' in self.global_best_prices[symbol]:
+            return self.global_best_prices[symbol]['bid']
+        return None
+
+    def get_best_ask(self, symbol: str) -> Optional[float]:
+        """Get the best ask price for a symbol in the local order book"""
+        if symbol in self.global_best_prices and 'ask' in self.global_best_prices[symbol]:
+            return self.global_best_prices[symbol]['ask']
+        return None
 
 
 

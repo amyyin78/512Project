@@ -1,171 +1,142 @@
-import uuid
+import os
+import queue
+from typing import Dict, Optional
 import asyncio
-from datetime import datetime
-from typing import Dict, List, Optional
-from common.order import Order, OrderStatus,Side
+from common.order import Order, OrderStatus
 from common.orderbook import OrderBook
-from engine.synchronizer import OrderBookSynchronizer  
-from proto import matching_service_pb2 as pb2
-import grpc.aio
+from client.custom_formatter import LogFactory
+from engine.synchronizer import OrderBookSynchronizer
+
 
 class MatchEngine:
-    def __init__(self, engine_id: str, synchronizer: OrderBookSynchronizer):
+    def __init__(self, engine_id: str, engine_addr: str, synchronizer: OrderBookSynchronizer, authentication_key: str = "password"):
         self.engine_id = engine_id
+        self.address = engine_addr
         self.orderbooks: Dict[str, OrderBook] = {}
         self.orders: Dict[str, Order] = {}
-        self.synchronizer = synchronizer 
-        
+        self.clients = []
+        self.fill_queues = {}
+
+        self.log_directory = os.getcwd() + "/logs/engine_logs/"
+        self.logger = LogFactory(
+            f"ME {self.engine_id}", self.log_directory
+        ).get_logger()
+
+        self.num_orders = 0
+        self.num_fills = 0
+        self.authentication_key = authentication_key
+        self.synchronizer = synchronizer
+        self.fill_routing_table = {}
+
+        self.symbol_bbo_lookup = {}
+
+    async def start_synchronizer(self):
+        await self.synchronizer.start()
+
     def create_orderbook(self, symbol: str) -> None:
         if symbol not in self.orderbooks:
             self.orderbooks[symbol] = OrderBook(symbol)
-            
-    async def submit_order(self, order: Order) -> (bool, str, List[Order]):
-        """Submit a new order to the matching engine or reroute based on global best price."""
-        # Assign the engine ID to the order
-        order.engine_id = self.engine_id
+
+    async def submit_order(self, order):
+        """Submit new order to matching engine"""
+
+        self.logger.debug(f"received order: {order}")
+
+        # First check if the best price for this symbol is on another engine
+        best_me_addr = await self.synchronizer.lookup_bbo_engine(order.symbol, order.side)
+        self.logger.info(f"Order {order.order_id} original address: {order.engine_origin_addr}")
+        self.logger.info(f"Order {order.order_id} best address: {best_me_addr}")
+
+        if best_me_addr != self.address and order.engine_origin_addr == self.address:
+            # route the order at most once
+            self.logger.info(f"routing order from {self.address} -> {best_me_addr}")
+            await self.synchronizer.route_order(order, best_me_addr)
+            self.logger.info(f"Order {order.order_id} routed to {best_me_addr}")
+            return {'incoming_fills' : [], 'resting_fills' : []}
+        else:
+            if order.engine_origin_addr != self.address:
+                self.logger.info(f"order {order.order_id} has been rerouted once, will process locally")
+            else:
+                self.logger.info(f"Order {order.order_id} processed locally")
+
         self.orders[order.order_id] = order
-        # Ensure the orderbook exists for the symbol
+
+        # update fill routing table
+        self.fill_routing_table[order.client_id] = order.engine_origin_addr
+        self.logger.debug(f"registered {order.client_id} wanting fills on engine address {order.engine_origin_addr}")
+
+        # validate order
+        self.validate_order(order)
+        self.logger.debug(f"order validated")
+
+        # add the order
+        fills = self.orderbooks[order.symbol].add_order(order)
+        self.logger.debug(f"order added")
+        self.num_orders += 1
+
+        # NOTE: Turn on this to see order book state after each order
+        self.logger.debug(f"order book state for {order.symbol} on engine {self.address}:\n" + str(self.orderbooks[order.symbol]))
+
+        # Add fills to queues
+        if fills:
+            self.logger.debug(f"clients registered with ME {self.address}: {self.clients}")
+            for client_id, fill in fills['incoming_fills'] + fills['resting_fills']:
+                if client_id in self.clients:
+                    self.fill_queues[client_id].put(fill)
+                    self.logger.debug(f"put to {client_id}")
+                    self.logger.debug(f"put: {fill}")
+                    self.num_fills += 1
+                else: 
+                    # the filled order was a routed order
+                    if client_id in self.fill_routing_table.keys():
+                        me_dst_addr = self.fill_routing_table[client_id]
+                        self.logger.debug(f"routing fill for client {client_id} to address {me_dst_addr}")
+                        # push a fill 
+                        await self.synchronizer.route_fill(fill, client_id, me_dst_addr)
+                    else:
+                        self.logger.error(f"{client_id} not a registered client of {self.engine_id} and is not registered in the routing table")
+
+        return fills
+
+    def validate_order(self, order):
         if order.symbol not in self.orderbooks:
             self.create_orderbook(order.symbol)
 
-        # Get global best prices from the synchronizer
-        global_best = self.synchronizer.global_best_prices  
-        order_symbol = order.symbol  
-        # print('checking')
-        # print(global_best)
+        if order.quantity != order.remaining_quantity:
+            self.logger.warning(
+                f"order from {order.client_id} with properties {order.pretty_print()} is malformed\nReason: quantity is not equal to remaining_quantity"
+            )
+            order.remaining_quantity = order.quantity
 
-        if order_symbol in global_best:
-            data = global_best[order_symbol]
-            best_bid = data.get('best_bid', {})
-            best_ask = data.get('best_ask', {})
-            global_best_bid = best_bid.get('price', 'N/A')
-            global_best_bid_id = best_bid.get('engine_id', 'N/A')
-            global_best_ask = best_ask.get('price', 'N/A')
-            global_best_ask_id = best_ask.get('engine_id', 'N/A')
+    def register_client(self, client_name):
+        if client_name not in self.clients:
+            self.clients.append(client_name)
+            self.fill_queues.update({client_name : queue.Queue()})
+            self.logger.info(f"Registered client {client_name}")
         else:
-            global_best_bid = None
-            global_best_ask = None
+            self.logger.warning(f"Attempted duplicate registration of client {client_name}")
+            # TODO: Maybe prevent connection here?
 
-        local_orderbook = self.orderbooks[order.symbol]
-        local_best_bid = max(local_orderbook.bids.keys(), default=None)
-        local_best_ask = min(local_orderbook.asks.keys(), default=None)
 
-        # Log local and global best prices
-        # print(f"Local best bid: {local_best_bid}, Local best ask: {local_best_ask}")
-        # print(f"Global best bid: {global_best_bid}, Global best ask: {global_best_ask}")
-
-        # Decide whether to process locally or reroute
-
-        local_best_bid = local_best_bid if local_best_bid is not None else 0  
-        local_best_ask = local_best_ask if local_best_ask is not None else 9999
-
-        if order.side == Side.SELL and global_best_bid is not None and global_best_bid > order.price and global_best_bid > local_best_bid:
-            # Global best bid is better
-            print(f"reroute SELL order {order.order_id} for {order.symbol} to global best bid {global_best_bid}")
-            # await self.route_order_to_global(order, global_best_bid, "bid", global_best_bid_id)
-            # return []
-            return False, global_best_bid_id, []
-        elif order.side == Side.BUY and global_best_ask is not None and global_best_ask < order.price and global_best_ask < local_best_ask:
-            # Global best ask is better
-            print(f"reroute BUY order {order.order_id} for {order.symbol} to global best ask {global_best_ask}")
-            # await self.route_order_to_global(order, global_best_ask, "ask", global_best_ask_id)
-            return False, global_best_ask_id, []
-
-        # Process locally if local best price is better or matches
-        # print(f"Processing order {order.order_id} locally for {order.symbol}")
-        fills = local_orderbook.add_order(order)
-
-        # Gather order book data for synchronization
-        bids = [(price, sum(o.remaining_quantity for o in orders), len(orders))
-                for price, orders in local_orderbook.bids.items()]
-        asks = [(price, sum(o.remaining_quantity for o in orders), len(orders))
-                for price, orders in local_orderbook.asks.items()]
-
-        # Log the updated bids and asks before publishing
-        # print(f"Order book after processing order {order.order_id}: Bids={bids}, Asks={asks}")
-
-        # Publish updates to peers
-        # print(f"Publishing update for {order.symbol} after order submission")
-        await self.synchronizer.publish_update(order.symbol, bids, asks)
-
-        return True, 0, fills
-
+    def authenticate(self, client_id : str, client_authentication : str):
+        # TODO: Add a proper authentication system (simple)
+        if (client_authentication == self.authentication_key):
+            return True
+        else:
+            self.logger.error(f"client {client_id} failed to authenticate on matching engine {self.engine_id} with password {client_authentication}")
+            return False
 
     def cancel_order(self, order_id: str) -> Optional[Order]:
         """Cancel existing order"""
         if order_id not in self.orders:
             return None
-            
+
         order = self.orders[order_id]
         if order.status != OrderStatus.CANCELLED:
             order.status = OrderStatus.CANCELLED
-            # Remove the order from bids or asks in the order book
-            local_orderbook = self.orderbooks[order.symbol]
-            if order.side == Side.BUY and order.price in local_orderbook.bids:
-                local_orderbook.bids[order.price].remove(order)
-                if not local_orderbook.bids[order.price]:
-                    del local_orderbook.bids[order.price]
-            elif order.side == Side.SELL and order.price in local_orderbook.asks:
-                local_orderbook.asks[order.price].remove(order)
-                if not local_orderbook.asks[order.price]:
-                    del local_orderbook.asks[order.price]
-
-            print(f"Order {order_id} cancelled. Updated order book: Bids={local_orderbook.bids}, Asks={local_orderbook.asks}")
             return order
         return None
-    
-    async def get_peer_orderbooks(self) -> Dict[str, OrderBook]:
-        """
-        Fetch the orderbooks from all connected peer engines.
-        """
-        peer_orderbooks = {}
-        for address, stub in self.peer_stubs.items():
-            try:
-                # Send a request to the peer to get the orderbook
-                request = pb2.GetOrderBookRequest()
-                response = await stub.GetOrderBook(request)
 
-                # Convert the protobuf response to an OrderBook object
-                orderbook = OrderBook(symbol=response.symbol)
-                
-                for bid in response.bids:
-                    orderbook.bids[bid.price] = [
-                        Order(
-                            order_id=str(uuid.uuid4()),
-                            symbol=response.symbol,
-                            side=Side.BUY,
-                            price=bid.price,
-                            quantity=bid.quantity,
-                            remaining_quantity=bid.quantity,
-                            status=OrderStatus.NEW,
-                            timestamp=datetime.now().timestamp(),
-                            user_id="peer",
-                            engine_id=address,
-                        )
-                        for _ in range(bid.order_count)
-                    ]
-
-                for ask in response.asks:
-                    orderbook.asks[ask.price] = [
-                        Order(
-                            order_id=str(uuid.uuid4()),
-                            symbol=response.symbol,
-                            side=Side.SELL,
-                            price=ask.price,
-                            quantity=ask.quantity,
-                            remaining_quantity=ask.quantity,
-                            status=OrderStatus.NEW,
-                            timestamp=datetime.now().timestamp(),
-                            user_id="peer",
-                            engine_id=address,
-                        )
-                        for _ in range(ask.order_count)
-                    ]
-
-                peer_orderbooks[address] = orderbook
-
-            except Exception as e:
-                print(f"Error fetching orderbook from peer {address}: {e}")
-
-        return peer_orderbooks
-
+    def log_orderbooks(self):
+        for orderbook in self.orderbooks:
+            self.logger.info(orderbook)

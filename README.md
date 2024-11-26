@@ -1,25 +1,33 @@
 # Distributed Order Matching Engine
+
 A simple distributed order matching system that demonstrates how multiple matching engines can synchronize order books across different nodes. 
 
 Final Project for CS512 Distsys 2024 Fall
 
 ## Project Structure
 ```
-512Project/
-├── proto/
-│   └── matching_service.proto
-├── common/
-│   ├── __init__.py
-│   ├── order.py
-│   └── orderbook.py
-├── engine/
-│   ├── __init__.py
-│   ├── match_engine.py
-│   └── synchronizer.py
-├── network/
-│   ├── __init__.py
-│   └── grpc_server.py
-└── main.py
+.
+├── client
+│   ├── client.py
+├── common
+│   ├── orderbook.py
+│   ├── order.py
+├── engine
+│   ├── exchange.py
+│   ├── match_engine.py
+│   └── synchronizer.py
+├── logs
+│   ├── ...
+├── main.py
+├── network
+│   ├── grpc_server.py
+├── proto
+│   ├── matching_service_pb2_grpc.py
+│   ├── matching_service_pb2.py
+│   ├── matching_service.proto
+├── README.md
+└── simulation
+    └── simulation.py
 ```
 
 ## Features
@@ -58,3 +66,6 @@ Final Project for CS512 Distsys 2024 Fall
   - parallelizing gRPC calls when broadscasting updates to different peers
   - batching multiple updates tgt instead of independently?
 - Something fun fun
+- Test entry
+
+

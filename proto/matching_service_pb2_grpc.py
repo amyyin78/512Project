@@ -3,7 +3,6 @@
 import grpc
 import warnings
 
-from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 from proto import matching_service_pb2 as proto_dot_matching__service__pb2
 
 GRPC_GENERATED_VERSION = '1.68.0'
@@ -38,7 +37,7 @@ class MatchingServiceStub(object):
         """
         self.SubmitOrder = channel.unary_unary(
                 '/matching.MatchingService/SubmitOrder',
-                request_serializer=proto_dot_matching__service__pb2.Order.SerializeToString,
+                request_serializer=proto_dot_matching__service__pb2.OrderRequest.SerializeToString,
                 response_deserializer=proto_dot_matching__service__pb2.SubmitOrderResponse.FromString,
                 _registered_method=True)
         self.CancelOrder = channel.unary_unary(
@@ -46,20 +45,35 @@ class MatchingServiceStub(object):
                 request_serializer=proto_dot_matching__service__pb2.CancelOrderRequest.SerializeToString,
                 response_deserializer=proto_dot_matching__service__pb2.CancelOrderResponse.FromString,
                 _registered_method=True)
-        self.SyncOrderBook = channel.unary_stream(
+        self.SyncOrderBook = channel.unary_unary(
                 '/matching.MatchingService/SyncOrderBook',
                 request_serializer=proto_dot_matching__service__pb2.SyncRequest.SerializeToString,
-                response_deserializer=proto_dot_matching__service__pb2.OrderBookUpdate.FromString,
+                response_deserializer=proto_dot_matching__service__pb2.SyncResponse.FromString,
+                _registered_method=True)
+        self.BroadcastOrderbook = channel.unary_unary(
+                '/matching.MatchingService/BroadcastOrderbook',
+                request_serializer=proto_dot_matching__service__pb2.BroadcastOrderbookRequest.SerializeToString,
+                response_deserializer=proto_dot_matching__service__pb2.BroadcastOrderbookResponse.FromString,
                 _registered_method=True)
         self.GetOrderBook = channel.unary_unary(
                 '/matching.MatchingService/GetOrderBook',
-                request_serializer=proto_dot_matching__service__pb2.GetOrderBookRequest.SerializeToString,
-                response_deserializer=proto_dot_matching__service__pb2.OrderBook.FromString,
+                request_serializer=proto_dot_matching__service__pb2.GetOrderbookRequest.SerializeToString,
+                response_deserializer=proto_dot_matching__service__pb2.GetOrderbookResponse.FromString,
                 _registered_method=True)
-        self.SyncGlobalBestPrice = channel.unary_unary(
-                '/matching.MatchingService/SyncGlobalBestPrice',
-                request_serializer=proto_dot_matching__service__pb2.GlobalBestPriceUpdate.SerializeToString,
-                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+        self.GetFills = channel.unary_stream(
+                '/matching.MatchingService/GetFills',
+                request_serializer=proto_dot_matching__service__pb2.FillRequest.SerializeToString,
+                response_deserializer=proto_dot_matching__service__pb2.Fill.FromString,
+                _registered_method=True)
+        self.PutFill = channel.unary_unary(
+                '/matching.MatchingService/PutFill',
+                request_serializer=proto_dot_matching__service__pb2.PutFillRequest.SerializeToString,
+                response_deserializer=proto_dot_matching__service__pb2.PutFillResponse.FromString,
+                _registered_method=True)
+        self.RegisterClient = channel.unary_unary(
+                '/matching.MatchingService/RegisterClient',
+                request_serializer=proto_dot_matching__service__pb2.ClientRegistrationRequest.SerializeToString,
+                response_deserializer=proto_dot_matching__service__pb2.ClientRegistrationResponse.FromString,
                 _registered_method=True)
 
 
@@ -82,7 +96,15 @@ class MatchingServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def SyncOrderBook(self, request, context):
-        """Stream of order book updates for synchronization
+        """Poll for order book updates for synchronization
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def BroadcastOrderbook(self, request, context):
+        """Broadcast changes to internal orderbook state
+
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -95,8 +117,24 @@ class MatchingServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def SyncGlobalBestPrice(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+    def GetFills(self, request, context):
+        """Stream of fill notifications
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PutFill(self, request, context):
+        """Put a routed fill to another ME
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RegisterClient(self, request, context):
+        """Client Registration
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -106,7 +144,7 @@ def add_MatchingServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'SubmitOrder': grpc.unary_unary_rpc_method_handler(
                     servicer.SubmitOrder,
-                    request_deserializer=proto_dot_matching__service__pb2.Order.FromString,
+                    request_deserializer=proto_dot_matching__service__pb2.OrderRequest.FromString,
                     response_serializer=proto_dot_matching__service__pb2.SubmitOrderResponse.SerializeToString,
             ),
             'CancelOrder': grpc.unary_unary_rpc_method_handler(
@@ -114,20 +152,35 @@ def add_MatchingServiceServicer_to_server(servicer, server):
                     request_deserializer=proto_dot_matching__service__pb2.CancelOrderRequest.FromString,
                     response_serializer=proto_dot_matching__service__pb2.CancelOrderResponse.SerializeToString,
             ),
-            'SyncOrderBook': grpc.unary_stream_rpc_method_handler(
+            'SyncOrderBook': grpc.unary_unary_rpc_method_handler(
                     servicer.SyncOrderBook,
                     request_deserializer=proto_dot_matching__service__pb2.SyncRequest.FromString,
-                    response_serializer=proto_dot_matching__service__pb2.OrderBookUpdate.SerializeToString,
+                    response_serializer=proto_dot_matching__service__pb2.SyncResponse.SerializeToString,
+            ),
+            'BroadcastOrderbook': grpc.unary_unary_rpc_method_handler(
+                    servicer.BroadcastOrderbook,
+                    request_deserializer=proto_dot_matching__service__pb2.BroadcastOrderbookRequest.FromString,
+                    response_serializer=proto_dot_matching__service__pb2.BroadcastOrderbookResponse.SerializeToString,
             ),
             'GetOrderBook': grpc.unary_unary_rpc_method_handler(
                     servicer.GetOrderBook,
-                    request_deserializer=proto_dot_matching__service__pb2.GetOrderBookRequest.FromString,
-                    response_serializer=proto_dot_matching__service__pb2.OrderBook.SerializeToString,
+                    request_deserializer=proto_dot_matching__service__pb2.GetOrderbookRequest.FromString,
+                    response_serializer=proto_dot_matching__service__pb2.GetOrderbookResponse.SerializeToString,
             ),
-            'SyncGlobalBestPrice': grpc.unary_unary_rpc_method_handler(
-                    servicer.SyncGlobalBestPrice,
-                    request_deserializer=proto_dot_matching__service__pb2.GlobalBestPriceUpdate.FromString,
-                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            'GetFills': grpc.unary_stream_rpc_method_handler(
+                    servicer.GetFills,
+                    request_deserializer=proto_dot_matching__service__pb2.FillRequest.FromString,
+                    response_serializer=proto_dot_matching__service__pb2.Fill.SerializeToString,
+            ),
+            'PutFill': grpc.unary_unary_rpc_method_handler(
+                    servicer.PutFill,
+                    request_deserializer=proto_dot_matching__service__pb2.PutFillRequest.FromString,
+                    response_serializer=proto_dot_matching__service__pb2.PutFillResponse.SerializeToString,
+            ),
+            'RegisterClient': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterClient,
+                    request_deserializer=proto_dot_matching__service__pb2.ClientRegistrationRequest.FromString,
+                    response_serializer=proto_dot_matching__service__pb2.ClientRegistrationResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -156,7 +209,7 @@ class MatchingService(object):
             request,
             target,
             '/matching.MatchingService/SubmitOrder',
-            proto_dot_matching__service__pb2.Order.SerializeToString,
+            proto_dot_matching__service__pb2.OrderRequest.SerializeToString,
             proto_dot_matching__service__pb2.SubmitOrderResponse.FromString,
             options,
             channel_credentials,
@@ -206,12 +259,39 @@ class MatchingService(object):
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_stream(
+        return grpc.experimental.unary_unary(
             request,
             target,
             '/matching.MatchingService/SyncOrderBook',
             proto_dot_matching__service__pb2.SyncRequest.SerializeToString,
-            proto_dot_matching__service__pb2.OrderBookUpdate.FromString,
+            proto_dot_matching__service__pb2.SyncResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BroadcastOrderbook(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/matching.MatchingService/BroadcastOrderbook',
+            proto_dot_matching__service__pb2.BroadcastOrderbookRequest.SerializeToString,
+            proto_dot_matching__service__pb2.BroadcastOrderbookResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -237,8 +317,8 @@ class MatchingService(object):
             request,
             target,
             '/matching.MatchingService/GetOrderBook',
-            proto_dot_matching__service__pb2.GetOrderBookRequest.SerializeToString,
-            proto_dot_matching__service__pb2.OrderBook.FromString,
+            proto_dot_matching__service__pb2.GetOrderbookRequest.SerializeToString,
+            proto_dot_matching__service__pb2.GetOrderbookResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -250,7 +330,34 @@ class MatchingService(object):
             _registered_method=True)
 
     @staticmethod
-    def SyncGlobalBestPrice(request,
+    def GetFills(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/matching.MatchingService/GetFills',
+            proto_dot_matching__service__pb2.FillRequest.SerializeToString,
+            proto_dot_matching__service__pb2.Fill.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PutFill(request,
             target,
             options=(),
             channel_credentials=None,
@@ -263,9 +370,36 @@ class MatchingService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/matching.MatchingService/SyncGlobalBestPrice',
-            proto_dot_matching__service__pb2.GlobalBestPriceUpdate.SerializeToString,
-            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            '/matching.MatchingService/PutFill',
+            proto_dot_matching__service__pb2.PutFillRequest.SerializeToString,
+            proto_dot_matching__service__pb2.PutFillResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterClient(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/matching.MatchingService/RegisterClient',
+            proto_dot_matching__service__pb2.ClientRegistrationRequest.SerializeToString,
+            proto_dot_matching__service__pb2.ClientRegistrationResponse.FromString,
             options,
             channel_credentials,
             insecure,
